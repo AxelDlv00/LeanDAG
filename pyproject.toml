@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "leandag"
+version = "0.1.0"
+description = "Dependency graph and complexity metrics for Lean 4 + leanblueprint projects"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+keywords = ["lean4", "leanblueprint", "mathematics", "formalization", "graph"]
+dependencies = [
+    "typer[all]>=0.9",
+    "rich>=13",
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.scripts]
+leandag = "leandag.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/adelaval/leandag"
+Issues   = "https://github.com/adelaval/leandag/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
