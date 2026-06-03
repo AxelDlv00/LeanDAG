@@ -480,15 +480,19 @@ components.forEach((m, i) => m.forEach(id => compOf[id] = i));
 
 // ── Project-stats overlay ────────────────────────────────────────────────────
 
+// A node needs no more work if it's leanok or already has a Lean proof (effort 0).
+const isDone = n => n.proved || n.effort_local === 0;
+
 function renderStats() {
   const vals = Object.values(allNodes);
   const bp   = vals.filter(n => n.type !== "lean_aux");
   const proved = bp.filter(n => n.proved).length;
   const sorry  = vals.filter(n => n.has_sorry).length;
-  const provedIds = new Set(vals.filter(n => n.proved).map(n => n.id));
-  const ready = bp.filter(n => !n.proved &&
-                  n.uses.every(d => !(d in allNodes) || provedIds.has(d))).length;
-  const gaps  = bp.filter(n => !n.lean_source).length;
+  const doneIds = new Set(vals.filter(isDone).map(n => n.id));
+  const ready = bp.filter(n => !isDone(n) &&
+                  n.uses.every(d => !(d in allNodes) || doneIds.has(d))).length;
+  const gaps   = bp.filter(n => !n.lean_name).length;
+  const leanok = bp.filter(n => !n.proved && n.effort_local === 0).length;
 
   let done = 0, remLower = 0, infNodes = 0;
   for (const n of vals) {
@@ -500,11 +504,12 @@ function renderStats() {
 
   $("stats-panel").innerHTML = `
     <h4>Project</h4>
-    <div class="row"><span>Proved</span><span class="v done">${proved}/${bp.length} · ${pct}%</span></div>
+    <div class="row"><span>Proved (leanok)</span><span class="v done">${proved}/${bp.length} · ${pct}%</span></div>
     <div class="bar"><span style="width:${pct}%"></span></div>
     <div class="row"><span>With sorry</span><span class="v ${sorry ? 'inf' : ''}">${sorry}</span></div>
-    <div class="row"><span>Ready to prove</span><span class="v">${ready}</span></div>
+    <div class="row"><span>Ready to formalize</span><span class="v">${ready}</span></div>
     <div class="row"><span>Needs \\lean{}</span><span class="v">${gaps}</span></div>
+    <div class="row"><span>Needs \\leanok</span><span class="v">${leanok}</span></div>
     <div class="sep"></div>
     <h4>Effort (chars)</h4>
     <div class="row"><span>Done</span><span class="v done">${fmt(done)}</span></div>

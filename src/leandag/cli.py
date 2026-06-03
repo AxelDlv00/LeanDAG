@@ -307,6 +307,7 @@ def stats(
     n_sorry  = sum(1 for n in dag.nodes if n.has_sorry)
     n_ready  = len(q.ready_to_prove())
     n_gaps   = len(q.needs_lean_statement())
+    n_leanok = len(q.needs_leanok())
     pct      = round(100 * n_proved / n_bp, 1) if n_bp else 0.0
     eff      = dag.effort_summary()
 
@@ -319,6 +320,7 @@ def stats(
         "with_sorry":      n_sorry,
         "ready_to_prove":  n_ready,
         "needs_lean_statement": n_gaps,
+        "needs_leanok":    n_leanok,
         "unmatched_lean":  len(dag.unmatched_lean),
         "axioms":          len(dag.axioms),
         "leaves":          len(dag.leaves),
@@ -333,8 +335,9 @@ def stats(
              ["Edges",            len(dag.edges)],
              ["Proved (leanok)",  f"{n_proved} ({pct}%)"],
              ["With sorry",       n_sorry],
-             ["Ready to prove",   n_ready],
+             ["Ready to formalize", n_ready],
              ["Needs \\lean{}",   n_gaps],
+             ["Needs \\leanok",   n_leanok],
              ["Unmatched \\lean{}", len(dag.unmatched_lean)],
              ["Axioms (dep=0)",   len(dag.axioms)],
              ["Leaves (rdep=0)",  len(dag.leaves)],
@@ -366,9 +369,10 @@ def focus(
     dag = _load_dag(root, rep)
     q   = Queries(dag)
 
-    ready = Queries.sort_by_impact(q.ready_to_prove(), top=top)
-    sorry = Queries.sort_by_impact(q.with_sorry(),     top=top)
-    gaps  = Queries.sort_by_impact(q.needs_lean_statement(), top=top)
+    ready  = Queries.sort_by_impact(q.ready_to_prove(), top=top)
+    sorry  = Queries.sort_by_impact(q.with_sorry(),     top=top)
+    gaps   = Queries.sort_by_impact(q.needs_lean_statement(), top=top)
+    leanok = Queries.sort_by_impact(q.needs_leanok(),   top=top)
     unmatched = [{"node": nid, "lean_name": ref} for nid, ref in dag.unmatched_lean]
 
     obj = {
@@ -376,6 +380,7 @@ def focus(
         "ready_to_formalize":   [_node_brief(n) for n in ready],
         "has_sorry":            [_node_brief(n) for n in sorry],
         "needs_lean_statement": [_node_brief(n) for n in gaps],
+        "needs_leanok":         [_node_brief(n) for n in leanok],
         "unmatched_lean":       unmatched[:top] if top else unmatched,
     }
 
@@ -386,9 +391,10 @@ def focus(
             f"(∞ nodes: {eff['effort_remaining_unknown_nodes']})"
         )
         sections = [
-            ("READY TO FORMALIZE (deps done, ranked by impact)", ready),
+            ("READY TO FORMALIZE (deps done, work remaining, ranked by impact)", ready),
             ("HAS SORRY (finish the Lean proof)",                sorry),
-            ("NEEDS \\lean{} (formalisation gap)",               gaps),
+            ("NEEDS \\lean{} (no Lean link yet)",                gaps),
+            ("NEEDS \\leanok (Lean proof exists — just flag it)", leanok),
         ]
         for title, ns in sections:
             rep.blank()
@@ -408,7 +414,7 @@ def focus(
     rep.emit(obj, rich=render, text=render)
 
 
-_SHOW_CHOICES = ("axioms", "leaves", "unproved", "sorry", "ready", "gaps")
+_SHOW_CHOICES = ("axioms", "leaves", "unproved", "sorry", "ready", "gaps", "leanok")
 
 
 @app.command()
@@ -434,6 +440,7 @@ def show(
         "sorry":    q.with_sorry,
         "ready":    q.ready_to_prove,
         "gaps":     q.needs_lean_statement,
+        "leanok":   q.needs_leanok,
     }[what]()
 
     rep.rule(f"{what}  ({len(nodes)} nodes)")

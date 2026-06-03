@@ -54,8 +54,8 @@ In `json`/`text` mode, progress lines go to **stderr** and the structured payloa
 | `build [ENTRY]` | Parse sources, save `dag.json`. `--html` also writes the graph; `--json` emits a build report (counts, effort, conflicts, unmatched `\lean{}`, unknown `\uses`). |
 | `html` | Regenerate `graph.html` from the cached DAG. |
 | `stats` | Counts, proved %, ready/gaps/unmatched, and the effort summary. |
-| `focus` | Agent agenda: `ready_to_formalize` (ranked by impact), `has_sorry`, `needs_lean_statement`, `unmatched_lean`. |
-| `show WHAT` | A named subset: `axioms`, `leaves`, `unproved`, `sorry`, `ready`, `gaps`. |
+| `focus` | Agent agenda: `ready_to_formalize` (ranked by impact), `has_sorry`, `needs_lean_statement`, `needs_leanok`, `unmatched_lean`. |
+| `show WHAT` | A named subset: `axioms`, `leaves`, `unproved`, `sorry`, `ready`, `gaps`, `leanok`. |
 | `query` | Arbitrary filter + sort (`--sort effort\|deps\|impact\|id`, `--unproved`, `--max-deps`, `--chapter`, `--type`, `--top`, …). |
 
 The scanner runs in parallel across processes and skips hidden directories (`.lake`, `.git`, tooling/snapshot dirs, …) and re-symlinked copies, so stale duplicates don't pollute the graph.

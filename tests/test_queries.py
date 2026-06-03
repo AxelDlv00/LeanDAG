@@ -14,16 +14,43 @@ def _dag():
 
 
 def test_needs_lean_statement():
-    # A has a resolved lean decl, B has none, C is lean_aux (skipped)
+    # A has a \lean{} link, B has none, C(unmatched) has a \lean{} that misses
     from leandag.models import BlueprintDecl
     decls = [
-        BlueprintDecl("A", "lemma", "", "", "", [], "", ["L"], False),
-        BlueprintDecl("B", "lemma", "", "", "", [], "", [], False),
+        BlueprintDecl("A", "lemma", "", "", "", [], "", ["L"],       False),
+        BlueprintDecl("B", "lemma", "", "", "", [], "", [],          False),
+        BlueprintDecl("C", "lemma", "", "", "", [], "", ["Missing"], False),
     ]
     lean = {"L": LeanDecl("L", "lemma L:True:=trivial", 21, False)}
     q = Queries(DAG.from_sources(decls, {}, lean))
     ids = {n.id for n in q.needs_lean_statement()}
-    assert ids == {"B"}                       # A resolved; lean_aux excluded
+    assert ids == {"B"}        # A linked; C is unmatched (separate list); aux excluded
+
+
+def test_ready_excludes_already_formalized():
+    # A has a Lean proof but no \leanok → effort 0, NOT ready (nothing to do).
+    from leandag.models import BlueprintDecl
+    decls = [
+        BlueprintDecl("A", "lemma", "", "", "", [],    "", ["L"], False),  # effort 0
+        BlueprintDecl("B", "lemma", "", "", "", ["A"], "x"*20, [], False), # real work
+    ]
+    lean = {"L": LeanDecl("L", "lemma L:True:=trivial", 21, False)}
+    q = Queries(DAG.from_sources(decls, {"B": "x"*20}, lean))
+    ready = {n.id for n in q.ready_to_prove()}
+    assert "A" not in ready          # already formalized
+    assert "B" in ready              # deps (A) done, B still needs work
+
+
+def test_needs_leanok():
+    # A: Lean proof exists but not flagged leanok → cheap win
+    from leandag.models import BlueprintDecl
+    decls = [
+        BlueprintDecl("A", "lemma", "", "", "", [], "", ["L"], False),
+        BlueprintDecl("B", "lemma", "", "", "", [], "", ["L"], True),   # already leanok
+    ]
+    lean = {"L": LeanDecl("L", "lemma L:True:=trivial", 21, False)}
+    q = Queries(DAG.from_sources(decls, {}, lean))
+    assert {n.id for n in q.needs_leanok()} == {"A"}
 
 
 def test_sort_by_impact():

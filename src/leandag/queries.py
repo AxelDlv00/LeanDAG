@@ -6,6 +6,17 @@ from .dag import DAG
 from .models import GraphNode
 
 
+def is_done(n: GraphNode) -> bool:
+    """A node needs no further formalisation work.
+
+    True when it is marked ``leanok`` *or* a sorry-free Lean proof/declaration
+    already exists for it (``effort_local == 0``). The second case matters: a
+    node can be fully formalised in Lean while ``\\leanok`` was never added to
+    the blueprint, and such a node must not be reported as "ready to do".
+    """
+    return n.proved or n.effort_local == 0
+
+
 class Queries:
     """
     Filter and sort a DAG's nodes.
@@ -43,28 +54,39 @@ class Queries:
 
     def ready_to_prove(self) -> list[GraphNode]:
         """
-        Blueprint nodes where every direct dependency is already proved
-        but the node itself is not yet proved.
+        Blueprint nodes that still need work and whose every direct dependency
+        is already done — i.e. actionable right now. "Done" means proved or
+        already formalised in Lean (see :func:`is_done`), so nodes that are
+        ``0 ✓`` are neither listed here nor block their dependents.
         """
-        known  = {n.id for n in self._dag.nodes}
-        proved = {n.id for n in self._dag.nodes if n.proved}
+        known = {n.id for n in self._dag.nodes}
+        done  = {n.id for n in self._dag.nodes if is_done(n)}
         return [
             n for n in self._dag.nodes
             if n.type != "lean_aux"
-            and not n.proved
-            and all(dep not in known or dep in proved for dep in n.uses)
+            and not is_done(n)
+            and all(dep not in known or dep in done for dep in n.uses)
+        ]
+
+    def needs_leanok(self) -> list[GraphNode]:
+        """Nodes with a complete Lean proof (``effort_local == 0``) that are not
+        yet flagged ``\\leanok`` — a cheap win: just mark them in the blueprint."""
+        return [
+            n for n in self._dag.nodes
+            if n.type != "lean_aux" and not n.proved and n.effort_local == 0
         ]
 
     def needs_lean_statement(self) -> list[GraphNode]:
-        """Blueprint nodes with no resolved ``\\lean{}`` declaration.
+        """Blueprint nodes with no ``\\lean{}`` link at all.
 
-        These are the formalisation gaps: a statement exists in the blueprint
-        but nothing in Lean is linked to it yet (either no ``\\lean{}`` was
-        written, or it points at a name that does not exist).
+        These are the pure formalisation gaps — a statement exists in the
+        blueprint but no Lean declaration is named for it. (A ``\\lean{}`` that
+        is written but points at a missing name shows up in the DAG's
+        ``unmatched_lean`` list instead, not here.)
         """
         return [
             n for n in self._dag.nodes
-            if n.type != "lean_aux" and not n.lean_source
+            if n.type != "lean_aux" and not n.lean_name
         ]
 
     # ── Parametric filter ──────────────────────────────────────────────────
