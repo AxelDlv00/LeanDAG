@@ -12,12 +12,13 @@ from .models import GraphNode
 
 # ── Effort colour scale (graph canvas) ─────────────────────────────────────────
 # Nodes are drawn as dots whose colour encodes the *local effort remaining*:
-#   0 (already formalised) → green, a distinct "done" colour; growing finite
-#   effort → yellow→orange ramp; ∞ (no proof to estimate from) → vivid red.
-# The three regions (green / warm ramp / red) are visually disjoint — green is
-# not part of the gradient — so state is readable at a glance.
+#   0 (already formalised) → green, a distinct "done" colour; \mathlibok (done
+#   via mathlib) → blue; growing finite effort → yellow→orange ramp; ∞ (no proof
+#   to estimate from) → vivid red. The regions are visually disjoint — green and
+#   blue are not part of the gradient — so state is readable at a glance.
 
 _DONE_FILL, _DONE_BORDER = "#22c55e", "#15803d"   # effort 0 — formalised (green)
+_MATHLIB_FILL, _MATHLIB_BORDER = "#3b82f6", "#1d4ed8"  # \mathlibok — in mathlib (blue)
 _INF_FILL,  _INF_BORDER  = "#ef4444", "#7f1d1d"   # effort ∞ — no estimate (red)
 _GRAD_HUE_HI = 52    # yellow (smallest finite effort)
 _GRAD_HUE_LO = 24    # orange (largest finite effort)
@@ -87,6 +88,8 @@ class HTMLExporter:
         legend_items = (
             f'<span class="leg-dot" style="background:{_DONE_FILL}"></span>'
             '<span class="leg-txt">done</span>'
+            f'<span class="leg-dot" style="background:{_MATHLIB_FILL}"></span>'
+            '<span class="leg-txt">mathlib</span>'
             '<span class="leg-bar"></span>'
             '<span class="leg-txt">more effort</span>'
             f'<span class="leg-dot" style="background:{_INF_FILL}"></span>'
@@ -138,7 +141,12 @@ class HTMLExporter:
     def _vis_node(n: GraphNode, max_effort: int) -> dict:
         is_aux       = n.type == "lean_aux"
         is_inf       = n.effort_local is None
-        fill, border = _effort_color(n.effort_local, max_effort)
+        # \mathlibok is "done" too, but drawn blue so it reads as distinct from
+        # locally-formalised (green) nodes.
+        if n.mathlib_ok:
+            fill, border = _MATHLIB_FILL, _MATHLIB_BORDER
+        else:
+            fill, border = _effort_color(n.effort_local, max_effort)
 
         # ∞ nodes are drawn a touch larger so they read as the salient blockers.
         size = 16 if is_inf else 11

@@ -87,7 +87,7 @@ The scanner runs in parallel across processes and skips hidden directories (`.la
 
 Force-directed layout (connected declarations cluster together; arrows show direction). Each node is a dot:
 
-- **Colour = local effort** — green = done (0), yellow→orange = increasing draft effort, red = ∞ (no proof).
+- **Colour = local effort** — green = done (0), blue = `\mathlibok` (in mathlib), yellow→orange = increasing draft effort, red = ∞ (no proof).
 - **Glyphs** — `✓` complete Lean proof · `⚠` `sorry` · `ⓜ` in mathlib (`\mathlibok`) · `λ` Lean declaration · `★` LaTeX proof · `§` statement only.
 - **Click** highlights a node's entire transitive cone (ancestors + descendants + edges); double-click focuses it; search jumps.
 - A **project-stats overlay** shows proved %, sorry/ready/gap counts and effort done/remaining at a glance.
