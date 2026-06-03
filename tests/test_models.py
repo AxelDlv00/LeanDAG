@@ -51,7 +51,7 @@ def test_blueprint_decl():
     bd = BlueprintDecl(
         id="lem:foo", type="lemma", title="Foo", chapter="Ch1",
         statement="S", uses=["a", "b"], proof_tex="P",
-        lean_name="FooLemma", is_proved=True,
+        lean_names=["FooLemma"], is_proved=True,
     )
     assert bd.uses      == ["a", "b"]
     assert bd.is_proved is True

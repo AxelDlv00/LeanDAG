@@ -7,15 +7,15 @@ from typing import Optional
 @dataclass
 class BlueprintDecl:
     """A mathematical declaration extracted from a leanblueprint LaTeX source."""
-    id:        str
-    type:      str
-    title:     str
-    chapter:   str
-    statement: str
-    uses:      list[str]
-    proof_tex: str
-    lean_name: Optional[str]
-    is_proved: bool
+    id:         str
+    type:       str
+    title:      str
+    chapter:    str
+    statement:  str
+    uses:       list[str]
+    proof_tex:  str
+    lean_names: list[str]   # every name in \lean{a, b}; empty if none
+    is_proved:  bool
 
 
 @dataclass
@@ -44,7 +44,7 @@ class GraphNode:
     uses:      list[str]    # ids of direct predecessors
 
     # Blueprint-derived fields (absent for lean_aux nodes)
-    lean_name: Optional[str] = None
+    lean_name: Optional[str] = None   # display string; ", "-joined when \lean{} lists several
     proved:    bool          = False
     proof_tex: str           = ""
 
@@ -54,8 +54,9 @@ class GraphNode:
     has_sorry:       bool          = False
 
     # Graph metrics (set by DAG)
-    dep_count:  int = 0   # number of direct dependencies
-    rdep_count: int = 0   # number of nodes that depend on this one
+    dep_count:        int = 0   # number of direct dependencies
+    rdep_count:       int = 0   # number of nodes that directly depend on this one
+    descendant_count: int = 0   # number of nodes that transitively depend on this one
 
     # Complexity metrics (set by DAG)
     proof_size_tex:        Optional[int] = None
@@ -82,6 +83,7 @@ class GraphNode:
             "has_sorry":             self.has_sorry,
             "dep_count":             self.dep_count,
             "rdep_count":            self.rdep_count,
+            "descendant_count":      self.descendant_count,
             "proof_size_tex":        self.proof_size_tex,
             "effort_local":          self.effort_local,
             "proof_size_tex_total":  self.proof_size_tex_total,
@@ -106,6 +108,7 @@ class GraphNode:
             has_sorry       = d.get("has_sorry", False),
             dep_count  = d.get("dep_count", 0),
             rdep_count = d.get("rdep_count", 0),
+            descendant_count = d.get("descendant_count", 0),
             proof_size_tex        = d.get("proof_size_tex"),
             effort_local          = d.get("effort_local"),
             proof_size_tex_total  = d.get("proof_size_tex_total"),

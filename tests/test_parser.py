@@ -61,7 +61,46 @@ def test_finds_all_declarations(tmp_path):
 def test_lean_name(tmp_path):
     decls, _ = _parser(tmp_path, _TEX).parse()
     foo = next(d for d in decls if d.id == "lem:foo")
-    assert foo.lean_name == "FooLemma"
+    assert foo.lean_names == ["FooLemma"]
+
+
+_TEX_MULTI_LEAN = textwrap.dedent(r"""
+    \begin{definition}
+      \label{def:multi}
+      \lean{A.one, A.two}
+      \lean{A.three}
+      A definition formalised by several Lean declarations.
+    \end{definition}
+""")
+
+
+_TEX_MACROS = textwrap.dedent(r"""
+    \newcommand{\Z}{\mathbb{Z}}
+    \newcommand{\abs}[1]{\left|#1\right|}
+    \DeclareMathOperator{\Spec}{Spec}
+    \def\HH{H}
+    \begin{lemma}
+      \label{lem:m}
+      For all $x$, $\abs{x} \ge 0$ in $\Z$ and $\Spec R$.
+    \end{lemma}
+""")
+
+
+def test_macros_extracted(tmp_path):
+    parser = _parser(tmp_path, _TEX_MACROS)
+    parser.parse()
+    m = parser.macros
+    assert m["\\Z"]   == r"\mathbb{Z}"
+    assert m["\\abs"] == r"\left|#1\right|"
+    assert m["\\Spec"] == r"\operatorname{Spec}"
+    assert m["\\HH"]  == "H"
+
+
+def test_lean_names_comma_separated_and_repeated(tmp_path):
+    # a comma-separated list and a repeated \lean{} both contribute names
+    decls, _ = _parser(tmp_path, _TEX_MULTI_LEAN).parse()
+    multi = next(d for d in decls if d.id == "def:multi")
+    assert multi.lean_names == ["A.one", "A.two", "A.three"]
 
 
 def test_leanok(tmp_path):

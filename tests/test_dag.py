@@ -6,7 +6,8 @@ from leandag.exporters import JSONExporter
 def _decl(id, uses=None, lean_name=None, is_proved=False, proof_tex=""):
     return BlueprintDecl(
         id=id, type="lemma", title="", chapter="", statement="",
-        uses=uses or [], proof_tex=proof_tex, lean_name=lean_name,
+        uses=uses or [], proof_tex=proof_tex,
+        lean_names=[lean_name] if lean_name else [],
         is_proved=is_proved,
     )
 
@@ -104,6 +105,38 @@ def test_proved_field():
     assert dag.node("B").proved is False
 
 
+def test_multiple_lean_names_aggregate():
+    # \lean{P, Q} aggregates both Lean sources and sums their sizes; one with
+    # a sorry makes the whole node's lean size unknown (None / ∞)
+    bp = BlueprintDecl(
+        id="A", type="lemma", title="", chapter="", statement="",
+        uses=[], proof_tex="", lean_names=["P", "Q"], is_proved=True,
+    )
+    lean = {"P": _lean("P"), "Q": _lean("Q")}
+    dag = DAG.from_sources([bp], {}, lean)
+    node = dag.node("A")
+    assert "lean:P" not in {n.id for n in dag.nodes}  # both referenced
+    assert "lean:Q" not in {n.id for n in dag.nodes}
+    assert node.lean_name == "P, Q"
+    assert node.proof_size_lean == lean["P"].proof_size + lean["Q"].proof_size
+
+    # a sorry decl has proof_size None (as the scanner produces it)
+    q_sorry    = LeanDecl(name="Q", source="sorry", proof_size=None, has_sorry=True)
+    lean_sorry = {"P": _lean("P"), "Q": q_sorry}
+    node2 = DAG.from_sources([bp], {}, lean_sorry).node("A")
+    assert node2.has_sorry is True
+    assert node2.proof_size_lean is None
+
+
+def test_unmatched_lean_reported():
+    bp = BlueprintDecl(
+        id="A", type="lemma", title="", chapter="", statement="",
+        uses=[], proof_tex="", lean_names=["Missing"], is_proved=False,
+    )
+    dag = DAG.from_sources([bp], {}, {})
+    assert ("A", "Missing") in dag.unmatched_lean
+
+
 # ── Load/save roundtrip ────────────────────────────────────────────────────────
 
 def test_json_roundtrip(tmp_path):
@@ -117,6 +150,53 @@ def test_json_roundtrip(tmp_path):
     b = dag2.node("B")
     assert b.dep_count  == 1
     assert b.effort_local is not None
+
+
+def test_descendant_count():
+    # A <- B <- C  and  A <- D : A is depended on (transitively) by B, C, D
+    decls = [_decl("A"), _decl("B", uses=["A"]), _decl("C", uses=["B"]), _decl("D", uses=["A"])]
+    dag = DAG.from_sources(decls, {}, {})
+    assert dag.node("A").descendant_count == 3   # B, C, D
+    assert dag.node("B").descendant_count == 1   # C
+    assert dag.node("C").descendant_count == 0
+
+
+def test_effort_summary():
+    # A: lean proof (done, size 27); B: draft proof 30 chars; C: no proof (∞)
+    lean  = {"X": _lean("X")}   # _lean source is 27 chars, no sorry
+    decls = [_decl("A", lean_name="X"), _decl("B"), _decl("C")]
+    dag = DAG.from_sources(decls, {"B": "y" * 30}, lean)
+    s = dag.effort_summary()
+    assert s["effort_done"] == len("lemma foo : True := trivial")   # A's lean size
+    assert s["effort_remaining_lower"] == 30                          # B; A=0, C=∞ omitted
+    assert s["effort_remaining_unknown_nodes"] == 1                   # C
+    assert s["effort_remaining"] is None                             # ∞ present
+
+
+def test_effort_summary_all_finite():
+    decls = [_decl("A"), _decl("B", uses=["A"])]
+    dag = DAG.from_sources(decls, {"A": "a" * 10, "B": "b" * 20}, {})
+    s = dag.effort_summary()
+    assert s["effort_remaining_unknown_nodes"] == 0
+    assert s["effort_remaining"] == 30
+
+
+def test_unmatched_lean_roundtrip(tmp_path):
+    bp = BlueprintDecl(id="A", type="lemma", title="", chapter="", statement="",
+                       uses=[], proof_tex="", lean_names=["Missing"], is_proved=False)
+    dag = DAG.from_sources([bp], {}, {})
+    p = tmp_path / "dag.json"
+    JSONExporter().export(dag, p)
+    assert ("A", "Missing") in DAG.load(p).unmatched_lean
+
+
+def test_macros_roundtrip(tmp_path):
+    decls = [_decl("A")]
+    dag   = DAG.from_sources(decls, {}, {}, macros={"\\Z": "\\mathbb{Z}"})
+    assert dag.macros == {"\\Z": "\\mathbb{Z}"}
+    p = tmp_path / "dag.json"
+    JSONExporter().export(dag, p)
+    assert DAG.load(p).macros == {"\\Z": "\\mathbb{Z}"}
 
 
 def test_ancestors():

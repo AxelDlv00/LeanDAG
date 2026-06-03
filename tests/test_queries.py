@@ -5,12 +5,37 @@ from leandag.queries import Queries
 
 def _dag():
     decls = [
-        BlueprintDecl("A", "lemma",   "", "Ch1", "", [],         "", None,  True),   # proved
-        BlueprintDecl("B", "theorem", "", "Ch1", "", ["A"],      "", None,  False),  # unproved, deps=[A]
-        BlueprintDecl("C", "lemma",   "", "Ch2", "", ["A", "B"], "", None,  False),  # unproved, deps=[A,B]
+        BlueprintDecl("A", "lemma",   "", "Ch1", "", [],         "", [],  True),   # proved
+        BlueprintDecl("B", "theorem", "", "Ch1", "", ["A"],      "", [],  False),  # unproved, deps=[A]
+        BlueprintDecl("C", "lemma",   "", "Ch2", "", ["A", "B"], "", [],  False),  # unproved, deps=[A,B]
     ]
     lean = {"SorryFn": LeanDecl("SorryFn", "sorry", None, True)}
     return DAG.from_sources(decls, {"B": "x" * 50}, lean)
+
+
+def test_needs_lean_statement():
+    # A has a resolved lean decl, B has none, C is lean_aux (skipped)
+    from leandag.models import BlueprintDecl
+    decls = [
+        BlueprintDecl("A", "lemma", "", "", "", [], "", ["L"], False),
+        BlueprintDecl("B", "lemma", "", "", "", [], "", [], False),
+    ]
+    lean = {"L": LeanDecl("L", "lemma L:True:=trivial", 21, False)}
+    q = Queries(DAG.from_sources(decls, {}, lean))
+    ids = {n.id for n in q.needs_lean_statement()}
+    assert ids == {"B"}                       # A resolved; lean_aux excluded
+
+
+def test_sort_by_impact():
+    from leandag.models import BlueprintDecl
+    decls = [
+        BlueprintDecl("A", "lemma", "", "", "", [],        "", [], False),
+        BlueprintDecl("B", "lemma", "", "", "", ["A"],     "", [], False),
+        BlueprintDecl("C", "lemma", "", "", "", ["B"],     "", [], False),
+    ]
+    dag = DAG.from_sources(decls, {}, {})
+    ordered = [n.id for n in Queries.sort_by_impact(dag.nodes)]
+    assert ordered[0] == "A"                  # A unblocks the most (B, C)
 
 
 def test_axioms():

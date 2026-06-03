@@ -55,6 +55,18 @@ class Queries:
             and all(dep not in known or dep in proved for dep in n.uses)
         ]
 
+    def needs_lean_statement(self) -> list[GraphNode]:
+        """Blueprint nodes with no resolved ``\\lean{}`` declaration.
+
+        These are the formalisation gaps: a statement exists in the blueprint
+        but nothing in Lean is linked to it yet (either no ``\\lean{}`` was
+        written, or it points at a name that does not exist).
+        """
+        return [
+            n for n in self._dag.nodes
+            if n.type != "lean_aux" and not n.lean_source
+        ]
+
     # ── Parametric filter ──────────────────────────────────────────────────
 
     def filter(
@@ -120,4 +132,14 @@ class Queries:
     ) -> list[GraphNode]:
         """Sort ascending by ``dep_count``."""
         result = sorted(nodes, key=lambda n: n.dep_count)
+        return result[:top] if top is not None else result
+
+    @staticmethod
+    def sort_by_impact(
+        nodes: list[GraphNode],
+        *,
+        top: Optional[int] = None,
+    ) -> list[GraphNode]:
+        """Sort descending by ``descendant_count`` — most-unblocking first."""
+        result = sorted(nodes, key=lambda n: n.descendant_count, reverse=True)
         return result[:top] if top is not None else result

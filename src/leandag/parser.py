@@ -34,10 +34,16 @@ class BlueprintParser:
 
         parser = BlueprintParser(Path("blueprint/src/web.tex"))
         decls, proofs = parser.parse()
+        parser.macros   # {"\\macro": "expansion"} collected from the preamble
+
+    After :meth:`parse`, ``parser.macros`` holds the LaTeX macro definitions
+    found in the project (``\\newcommand``/``\\def``/``\\DeclareMathOperator``),
+    suitable for handing to KaTeX so blueprint-defined notation renders.
     """
 
     def __init__(self, entry: Path) -> None:
         self._entry = entry
+        self.macros: dict[str, str] = {}
 
     def parse(self) -> tuple[list[BlueprintDecl], dict[str, str]]:
         """
@@ -46,7 +52,8 @@ class BlueprintParser:
         ``proof_bodies`` maps a declaration id to the raw LaTeX text
         inside its nearest ``proof`` environment.
         """
-        text   = self._load_tex(self._entry, visited=set())
+        text        = self._load_tex(self._entry, visited=set())
+        self.macros = self._extract_macros(text)
         decls  = self._extract_declarations(text)
         proofs = self._extract_proofs(text, decls)
         for decl in decls:
@@ -104,11 +111,17 @@ class BlueprintParser:
                 if label_m is None:
                     continue
 
-                lean_m = _LEAN_RE.search(body)
                 uses_m = _USES_RE.search(body)
 
                 label     = label_m.group(1).strip()
-                lean_name = lean_m.group(1).strip() if lean_m else None
+                # \lean{} may list several comma-separated names, and may even
+                # appear more than once in a single environment — collect them all.
+                lean_names = [
+                    name.strip()
+                    for lm in _LEAN_RE.finditer(body)
+                    for name in lm.group(1).split(',')
+                    if name.strip()
+                ]
                 is_proved = bool(_LEANOK_RE.search(body))
                 uses_raw  = uses_m.group(1) if uses_m else ''
                 uses      = [u.strip() for u in uses_raw.split(',') if u.strip()]
@@ -122,10 +135,10 @@ class BlueprintParser:
                     title     = title,
                     chapter   = chapter_at(bm.start()),
                     statement = stmt,
-                    uses      = uses,
-                    proof_tex = '',
-                    lean_name = lean_name,
-                    is_proved = is_proved,
+                    uses       = uses,
+                    proof_tex  = '',
+                    lean_names = lean_names,
+                    is_proved  = is_proved,
                 ))
 
         label_pos = {m.group(1).strip(): m.start() for m in _LABEL_RE.finditer(text)}
@@ -163,3 +176,91 @@ class BlueprintParser:
                 out.append(text[i])
                 i += 1
         return ''.join(out)
+
+    # ── Macro extraction ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _read_braced(text: str, i: int) -> tuple[str, int]:
+        """If ``text[i]`` is ``{``, return ``(body, index_after_close)`` with
+        nested braces balanced; otherwise ``('', i)``."""
+        if i >= len(text) or text[i] != '{':
+            return '', i
+        depth, j = 0, i
+        n = len(text)
+        while j < n:
+            c = text[j]
+            if c == '\\':            # skip escaped char (e.g. \{ \})
+                j += 2
+                continue
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    return text[i + 1:j], j + 1
+            j += 1
+        return text[i + 1:], n       # unbalanced — take the rest
+
+    def _extract_macros(self, text: str) -> dict[str, str]:
+        r"""
+        Collect ``\newcommand``/``\renewcommand``/``\providecommand``,
+        ``\def`` and ``\DeclareMathOperator`` definitions into a KaTeX macro
+        map ``{"\\name": "expansion"}``. Argument placeholders (``#1`` …) are
+        kept verbatim, which is what KaTeX expects.
+        """
+        macros: dict[str, str] = {}
+
+        # \newcommand{\name}[args][default]{body}  /  \newcommand\name{body}
+        cmd_re = re.compile(r'\\(?:newcommand|renewcommand|providecommand)\s*\*?\s*')
+        for m in cmd_re.finditer(text):
+            i = m.end()
+            # name: either {\foo} or \foo
+            if i < len(text) and text[i] == '{':
+                name_block, i = self._read_braced(text, i)
+                name = name_block.strip()
+            else:
+                nm = re.match(r'\\([A-Za-z@]+)', text[i:])
+                if not nm:
+                    continue
+                name = '\\' + nm.group(1)
+                i += nm.end()
+            if not name.startswith('\\'):
+                continue
+            # optional [n] and [default] specifiers
+            while i < len(text) and text[i:].lstrip(' \t').startswith('['):
+                i = text.index('[', i)
+                close = text.find(']', i)
+                if close == -1:
+                    break
+                i = close + 1
+            i = self._skip_ws(text, i)
+            body, _ = self._read_braced(text, i)
+            if name:
+                macros[name] = body.strip()
+
+        # \DeclareMathOperator{\name}{op}  (star → \operatorname*)
+        op_re = re.compile(r'\\DeclareMathOperator\s*(\*?)\s*')
+        for m in op_re.finditer(text):
+            star = m.group(1)
+            i = self._skip_ws(text, m.end())
+            name_block, i = self._read_braced(text, i)
+            i = self._skip_ws(text, i)
+            op_block, _ = self._read_braced(text, i)
+            name = name_block.strip()
+            if name.startswith('\\'):
+                opname = '\\operatorname' + ('*' if star else '')
+                macros[name] = f'{opname}{{{op_block.strip()}}}'
+
+        # \def\name{body}
+        for m in re.finditer(r'\\def\s*\\([A-Za-z@]+)\s*', text):
+            name = '\\' + m.group(1)
+            body, _ = self._read_braced(text, self._skip_ws(text, m.end()))
+            macros.setdefault(name, body.strip())
+
+        return macros
+
+    @staticmethod
+    def _skip_ws(text: str, i: int) -> int:
+        while i < len(text) and text[i] in ' \t\r\n':
+            i += 1
+        return i

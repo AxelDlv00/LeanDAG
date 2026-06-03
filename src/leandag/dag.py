@@ -8,6 +8,14 @@ from typing import Optional
 from .models import BlueprintDecl, Edge, GraphNode, LeanDecl
 
 
+# Node types whose formalisation work is the *proof*. Everything else
+# (definition, notation, remark, conjecture, lean_aux) is measured by the
+# content of the declaration itself — it has no proof to write.
+_PROOF_TYPES: frozenset[str] = frozenset({
+    "lemma", "theorem", "proposition", "corollary", "exercise",
+})
+
+
 class DAG:
     """
     Dependency graph of mathematical declarations.
@@ -28,6 +36,12 @@ class DAG:
         self._nodes  = nodes
         self._edges  = edges
         self._by_id: dict[str, GraphNode] = {n.id: n for n in nodes}
+        # (node_id, lean_ref) for every \lean{} name that matched no Lean
+        # declaration — populated by :meth:`from_sources`, empty after load().
+        self.unmatched_lean: list[tuple[str, str]] = []
+        # LaTeX macro map ({"\\name": "expansion"}) for rendering blueprint
+        # notation; populated from the parser at build time, persisted in JSON.
+        self.macros: dict[str, str] = {}
 
     # ── Factories ──────────────────────────────────────────────────────────
 
@@ -37,6 +51,7 @@ class DAG:
         blueprint_decls: list[BlueprintDecl],
         proofs: dict[str, str],
         lean_decls: dict[str, LeanDecl],
+        macros: Optional[dict[str, str]] = None,
     ) -> DAG:
         """
         Build a DAG from parsed blueprint declarations and Lean declarations.
@@ -46,9 +61,18 @@ class DAG:
         """
         nodes = cls._build_nodes(blueprint_decls, proofs, lean_decls)
         cls._compute_degrees(nodes)
+        cls._compute_impact(nodes)
         cls._compute_metrics(nodes)
         edges = cls._build_edges(nodes)
-        return cls(nodes, edges)
+        dag = cls(nodes, edges)
+        dag.macros = macros or {}
+        dag.unmatched_lean = [
+            (decl.id, name)
+            for decl in blueprint_decls
+            for name in decl.lean_names
+            if name not in lean_decls
+        ]
+        return dag
 
     @classmethod
     def load(cls, path: Path) -> DAG:
@@ -56,7 +80,11 @@ class DAG:
         data  = json.loads(path.read_text(encoding='utf-8'))
         nodes = [GraphNode.from_dict(d) for d in data["nodes"]]
         edges = [Edge(source=e["from"], target=e["to"]) for e in data["edges"]]
-        return cls(nodes, edges)
+        dag = cls(nodes, edges)
+        meta = data.get("meta", {})
+        dag.macros = meta.get("macros", {})
+        dag.unmatched_lean = [tuple(x) for x in meta.get("unmatched_lean", [])]
+        return dag
 
     # ── Public interface ───────────────────────────────────────────────────
 
@@ -93,6 +121,31 @@ class DAG:
                 queue.extend(uses_of.get(curr, []))
         return visited
 
+    def effort_summary(self) -> dict:
+        """Project-wide formalisation accounting.
+
+        - ``effort_done``            Σ Lean code size already written
+                                     (uncommented, sorry-free declarations).
+        - ``effort_remaining_lower`` Σ local effort over nodes with a *finite*
+                                     estimate — a lower bound, since nodes with
+                                     no estimate (∞) are omitted.
+        - ``effort_remaining_unknown_nodes`` how many nodes have ∞ local effort
+                                     (no Lean proof and no draft to estimate from).
+        - ``effort_remaining``       the lower bound if nothing is ∞, else
+                                     ``None`` meaning the true total is unbounded.
+        """
+        done = sum(n.proof_size_lean for n in self._nodes
+                   if n.proof_size_lean is not None)
+        finite  = [n.effort_local for n in self._nodes if n.effort_local is not None]
+        unknown = sum(1 for n in self._nodes if n.effort_local is None)
+        lower   = sum(finite)
+        return {
+            "effort_done":                  done,
+            "effort_remaining_lower":       lower,
+            "effort_remaining_unknown_nodes": unknown,
+            "effort_remaining":             lower if unknown == 0 else None,
+        }
+
     # ── Assembly (private) ─────────────────────────────────────────────────
 
     @staticmethod
@@ -105,9 +158,13 @@ class DAG:
         referenced_lean: set[str] = set()
 
         for decl in blueprint_decls:
-            lean = lean_decls.get(decl.lean_name) if decl.lean_name else None
-            if lean:
-                referenced_lean.add(decl.lean_name)  # type: ignore[arg-type]
+            # A node may point at several Lean declarations (\lean{a, b}); the
+            # Lean-side metrics aggregate over every name that resolves.
+            matched = [lean_decls[name] for name in decl.lean_names if name in lean_decls]
+            referenced_lean.update(name for name in decl.lean_names if name in lean_decls)
+
+            sizes      = [m.proof_size for m in matched]
+            proof_size = None if any(s is None for s in sizes) else sum(sizes)
 
             proof_tex      = proofs.get(decl.id, '')
             proof_size_tex = DAG._count_tex_chars(proof_tex)
@@ -119,12 +176,12 @@ class DAG:
                 chapter         = decl.chapter,
                 statement       = decl.statement,
                 uses            = decl.uses,
-                lean_name       = decl.lean_name,
+                lean_name       = ", ".join(decl.lean_names) or None,
                 proved          = decl.is_proved,
                 proof_tex       = proof_tex,
-                lean_source     = lean.source     if lean else "",
-                proof_size_lean = lean.proof_size  if lean else None,
-                has_sorry       = lean.has_sorry   if lean else False,
+                lean_source     = "\n\n".join(m.source for m in matched),
+                proof_size_lean = proof_size if matched else None,
+                has_sorry       = any(m.has_sorry for m in matched),
                 proof_size_tex  = proof_size_tex,
             ))
 
@@ -162,11 +219,44 @@ class DAG:
             n.rdep_count = rdep[n.id]
 
     @staticmethod
+    def _compute_impact(nodes: list[GraphNode]) -> None:
+        """Set ``descendant_count`` — how many nodes transitively depend on each.
+
+        A high value marks a node on the critical path: formalising it unblocks
+        many others, so it is a natural focus point.
+        """
+        ids: set[str] = {n.id for n in nodes}
+        succ: dict[str, list[str]] = defaultdict(list)
+        for n in nodes:
+            for pred_id in n.uses:
+                if pred_id in ids:
+                    succ[pred_id].append(n.id)
+
+        for n in nodes:
+            seen: set[str] = set()
+            stack = list(succ.get(n.id, []))
+            while stack:
+                x = stack.pop()
+                if x not in seen:
+                    seen.add(x)
+                    stack.extend(succ.get(x, []))
+            n.descendant_count = len(seen)
+
+    @staticmethod
     def _compute_metrics(nodes: list[GraphNode]) -> None:
         """
         Compute cumulative costs for every node.
 
-        - ``effort_local``          = 0 if Lean proof complete, tex chars if draft, None if ∞
+        ``effort_local`` is the work remaining to formalise the node:
+
+        - ``0``                         if it is already formalised in Lean
+        - for proof nodes (theorem/lemma/…): the draft proof's tex size,
+          or ``None`` (∞) when there is no proof to estimate from
+        - for definitions and other non-proof nodes: the tex size of the
+          declaration's *content* (its statement) — the proof is irrelevant
+
+        Other metrics:
+
         - ``proof_size_tex_total``  = Σ proof_size_tex  over {v} ∪ ancestors(v)
         - ``proof_size_lean_total`` = Σ proof_size_lean over {v} ∪ ancestors(v)
         - ``effort_total``          = Σ effort_local    over {v} ∪ ancestors(v)
@@ -197,11 +287,14 @@ class DAG:
             return total
 
         def effort_local(n: GraphNode) -> Optional[int]:
+            # Already formalised in Lean → nothing left to do.
             if n.proof_size_lean is not None:
                 return 0
-            if n.proof_size_tex is not None:
+            # Proof nodes: work ≈ the draft proof; ∞ when there is no draft.
+            if n.type in _PROOF_TYPES:
                 return n.proof_size_tex
-            return None
+            # Definitions &c.: work ≈ the content of the declaration itself.
+            return DAG._count_tex_chars(n.statement)
 
         rel_effort = {n.id: effort_local(n) for n in nodes}
 
