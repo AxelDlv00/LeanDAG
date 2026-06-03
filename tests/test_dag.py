@@ -89,6 +89,34 @@ def test_effort_total_cumulative():
     assert dag.node("B").effort_total == 30  # A(10) + B(20)
 
 
+def test_isolated_property():
+    # E is wired to nothing; A→B is a chain. dag.isolated mirrors Queries.isolated.
+    decls = [_decl("A"), _decl("B", uses=["A"]), _decl("E")]
+    dag = DAG.from_sources(decls, {}, {})
+    assert {n.id for n in dag.isolated} == {"E"}
+
+
+def test_file_provenance_on_nodes():
+    decls = [_decl("A", lean_name="Foo"), _decl("B")]
+    decls[0].tex_file = "ch1.tex"
+    decls[1].tex_file = "ch2.tex"
+    lean = {"Foo": LeanDecl("Foo", "lemma foo : True := trivial", 27, False,
+                            file="Algebra/Foo.lean")}
+    dag = DAG.from_sources(decls, {}, lean)
+    a = dag.node("A")
+    assert a.tex_file == "ch1.tex"
+    assert a.lean_file == "Algebra/Foo.lean"     # from the matched Lean decl
+    assert dag.node("B").lean_file == ""          # no Lean match → no file
+    # round-trips through JSON
+    import json, tempfile, pathlib
+    with tempfile.TemporaryDirectory() as d:
+        p = pathlib.Path(d) / "dag.json"
+        JSONExporter().export(dag, p)
+        dag2 = DAG.load(p)
+        assert dag2.node("A").lean_file == "Algebra/Foo.lean"
+        assert dag2.node("A").tex_file == "ch1.tex"
+
+
 def test_effort_total_none_propagates():
     # C has no proof → effort_local=None → effort_total of dependents is None
     decls = [_decl("C"), _decl("D", uses=["C"])]

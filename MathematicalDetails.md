@@ -10,7 +10,7 @@
 * For each node $s \in \mathcal{G}$, we define the **relative effort** $w_{\text{rel}}(s)$ as:
 
 $$w_{\text{rel}}(s) = \begin{cases} 
-0 & \text{if } \texttt{sorry} \notin \text{formal}(s) \wedge \text{formal}(s) \neq \varnothing \\ 
+0 & \text{if } s\in H \text{ or } (\texttt{sorry} \notin \text{formal}(s) \wedge \text{formal}(s) \neq \varnothing) \\ 
 \ell(\text{informal}(s)) & \text{if } \text{informal}(s) \neq \varnothing \\ 
 +\infty & \text{otherwise} 
 \end{cases}$$

@@ -109,6 +109,29 @@ def test_leanok(tmp_path):
     assert foo.is_proved is True
 
 
+_TEX_MATHLIBOK = textwrap.dedent(r"""
+    \begin{lemma}[In mathlib]
+      \label{lem:ml}
+      A standard result already in mathlib.
+      \mathlibok
+    \end{lemma}
+""")
+
+
+def test_mathlibok_parsed(tmp_path):
+    decls, _ = _parser(tmp_path, _TEX_MATHLIBOK).parse()
+    ml = next(d for d in decls if d.id == "lem:ml")
+    assert ml.mathlib_ok is True
+    assert ml.is_proved is False          # \mathlibok is distinct from \leanok
+    # the command itself must not leak into the statement text
+    assert "mathlibok" not in ml.statement
+
+
+def test_mathlibok_absent_by_default(tmp_path):
+    decls, _ = _parser(tmp_path, _TEX).parse()
+    assert all(d.mathlib_ok is False for d in decls)
+
+
 def test_uses_parsed(tmp_path):
     decls, _ = _parser(tmp_path, _TEX).parse()
     thm = next(d for d in decls if d.id == "thm:main")
@@ -139,6 +162,17 @@ def test_input_expansion(tmp_path):
     ids = {d.id for d in decls}
     assert "lem:root"  in ids
     assert "def:child" in ids
+
+
+def test_tex_file_provenance(tmp_path):
+    # declarations are attributed to the actual file they were written in,
+    # even across \input{} flattening
+    (tmp_path / "web.tex").write_text(_TEX_WITH_INPUT)
+    (tmp_path / "child.tex").write_text(_TEX_CHILD)
+    decls, _ = BlueprintParser(tmp_path / "web.tex").parse()
+    by_id = {d.id: d for d in decls}
+    assert by_id["lem:root"].tex_file  == "web.tex"
+    assert by_id["def:child"].tex_file == "child.tex"
 
 
 def test_unlabeled_env_skipped(tmp_path):

@@ -110,14 +110,16 @@ class HTMLExporter:
     def _status_glyphs(n: GraphNode) -> str:
         """Compact per-node state markers (see the toolbar's symbol legend).
 
-        Slot 1 — Lean side:  ✓ complete proof · ⚠ has sorry · λ declared only.
-        Slot 2 — LaTeX side: ★ has a written proof · § statement only.
+        Slot 1 — Lean side:  ✓ complete proof · ⚠ has sorry · ⓜ in mathlib ·
+        λ declared only.  Slot 2 — LaTeX side: ★ has a written proof · § statement.
         """
         has_lean = bool(n.lean_source) or n.type == "lean_aux"
         if n.has_sorry:
             lean_g = "⚠"
         elif n.proof_size_lean is not None:
             lean_g = "✓"
+        elif n.mathlib_ok:
+            lean_g = "ⓜ"
         elif has_lean:
             lean_g = "λ"
         else:
@@ -277,6 +279,30 @@ body { font-family:var(--sans); display:flex; flex-direction:column;
 #stats-panel .sep { border-top:1px solid #1e3a5f; margin:7px 0; }
 #graph canvas { display:block; }
 
+/* ── File-view colour legend ─────────────────────────────────── */
+#file-legend {
+  position:absolute; bottom:12px; left:12px; z-index:5;
+  background:rgba(15,23,42,.9); border:1px solid #1e3a5f; border-radius:8px;
+  padding:9px 11px; max-width:280px; max-height:42%; overflow-y:auto;
+  backdrop-filter:blur(3px); font-size:11px; color:#cbd5e1;
+  box-shadow:0 4px 16px rgba(0,0,0,.25);
+}
+#file-legend::-webkit-scrollbar { width:4px; }
+#file-legend::-webkit-scrollbar-thumb { background:#1e3a5f; border-radius:2px; }
+#file-legend h4 {
+  font-size:10px; font-weight:700; letter-spacing:.08em; text-transform:uppercase;
+  color:#64748b; margin-bottom:7px;
+}
+#file-legend .fl-row { display:flex; align-items:center; gap:7px; line-height:1.9; }
+#file-legend .fl-sw { width:11px; height:11px; border-radius:3px; flex-shrink:0;
+  border:1px solid rgba(255,255,255,.18); }
+#file-legend .fl-name {
+  font-family:var(--mono); font-size:10px; color:#cbd5e1;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1;
+}
+#file-legend .fl-n { font-family:var(--mono); font-size:10px; color:#64748b; }
+#file-legend .fl-empty { font-style:italic; color:#475569; }
+
 /* ── Sidebar ─────────────────────────────────────────────────── */
 #sidebar {
   width:340px; flex-shrink:0;
@@ -403,6 +429,7 @@ body { font-family:var(--sans); display:flex; flex-direction:column;
   <span class="legend sym-legend">
     <span class="leg-txt">✓ Lean proof</span>
     <span class="leg-txt">⚠ sorry</span>
+    <span class="leg-txt">ⓜ mathlib</span>
     <span class="leg-txt">λ Lean decl</span>
     <span class="leg-txt">★ LaTeX proof</span>
     <span class="leg-txt">§ statement</span>
@@ -419,7 +446,12 @@ body { font-family:var(--sans); display:flex; flex-direction:column;
   </select>
   <select id="component"><option value="">All components</option></select>
   <select id="chapter"><option value="">All chapters</option></select>
-  <label class="chk"><input type="checkbox" id="orphans"> show isolated nodes</label>
+  <select id="fileview" title="Tint the background by source file">
+    <option value="off">File view: off</option>
+    <option value="lean">File view: Lean files</option>
+    <option value="tex">File view: LaTeX files</option>
+  </select>
+  <label class="chk"><input type="checkbox" id="orphans"> show isolated <span id="iso-count"></span></label>
   <span id="focus-pill" class="pill" style="display:none" title="Clear focus">
     <span class="lbl"></span><span class="x">&times;</span>
   </span>
@@ -428,6 +460,7 @@ body { font-family:var(--sans); display:flex; flex-direction:column;
 <div id="main">
   <div id="graph"></div>
   <div id="stats-panel"></div>
+  <div id="file-legend" style="display:none"></div>
   <aside id="sidebar">
     <div id="sidebar-empty">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none"
@@ -478,21 +511,35 @@ const components = Object.values(compMembers).sort((a, b) => b.length - a.length
 const compOf = {};
 components.forEach((m, i) => m.forEach(id => compOf[id] = i));
 
+// Isolated nodes are kept out of the force simulation (they'd only drift under
+// repulsion); layoutOrphans() grid-places them after each settle instead.
+for (const vn of graphData.nodes) if (isOrphan(vn.id)) vn.physics = false;
+
+// Surface the isolated-node count right on the toggle, so it's obvious how many
+// there are (and that they exist) without having to switch the view on.
+const _isoCount = Object.keys(allNodes).filter(isOrphan).length;
+$("iso-count").textContent = `(${_isoCount})`;
+if (!_isoCount) $("orphans").disabled = true;
+
 // ── Project-stats overlay ────────────────────────────────────────────────────
 
-// A node needs no more work if it's leanok or already has a Lean proof (effort 0).
-const isDone = n => n.proved || n.effort_local === 0;
+// A node needs no more work if it's leanok, in mathlib, or already has a Lean
+// proof (effort 0).
+const isDone = n => n.proved || n.mathlib_ok || n.effort_local === 0;
 
 function renderStats() {
   const vals = Object.values(allNodes);
   const bp   = vals.filter(n => n.type !== "lean_aux");
-  const proved = bp.filter(n => n.proved).length;
+  const proved  = bp.filter(n => n.proved).length;
+  const mathlib = bp.filter(n => n.mathlib_ok).length;
   const sorry  = vals.filter(n => n.has_sorry).length;
   const doneIds = new Set(vals.filter(isDone).map(n => n.id));
   const ready = bp.filter(n => !isDone(n) &&
                   n.uses.every(d => !(d in allNodes) || doneIds.has(d))).length;
-  const gaps   = bp.filter(n => !n.lean_name).length;
-  const leanok = bp.filter(n => !n.proved && n.effort_local === 0).length;
+  const gaps   = bp.filter(n => !n.lean_name && !n.mathlib_ok).length;
+  const leanok = bp.filter(n => !n.proved && !n.mathlib_ok && n.effort_local === 0).length;
+  const isolated   = vals.filter(n => isOrphan(n.id)).length;
+  const isolatedBp = bp.filter(n => isOrphan(n.id)).length;
 
   let done = 0, remLower = 0, infNodes = 0;
   for (const n of vals) {
@@ -506,10 +553,12 @@ function renderStats() {
     <h4>Project</h4>
     <div class="row"><span>Proved (leanok)</span><span class="v done">${proved}/${bp.length} · ${pct}%</span></div>
     <div class="bar"><span style="width:${pct}%"></span></div>
+    ${mathlib ? `<div class="row"><span>Mathlib-backed</span><span class="v done">${mathlib}</span></div>` : ''}
     <div class="row"><span>With sorry</span><span class="v ${sorry ? 'inf' : ''}">${sorry}</span></div>
     <div class="row"><span>Ready to formalize</span><span class="v">${ready}</span></div>
     <div class="row"><span>Needs \\lean{}</span><span class="v">${gaps}</span></div>
     <div class="row"><span>Needs \\leanok</span><span class="v">${leanok}</span></div>
+    <div class="row" title="Declarations with no \\uses{} in or out — never linked into the graph"><span>Isolated</span><span class="v ${isolated ? 'inf' : ''}">${isolated}${isolatedBp !== isolated ? ` (${isolatedBp} bp)` : ''}</span></div>
     <div class="sep"></div>
     <h4>Effort (chars)</h4>
     <div class="row"><span>Done</span><span class="v done">${fmt(done)}</span></div>
@@ -545,7 +594,8 @@ $("chapter").insertAdjacentHTML("beforeend",
 
 // ── Visible-set state & computation ─────────────────────────────────────────
 
-const state = { showOrphans: false, focus: null, component: null, chapter: null, nodeset: "union" };
+const state = { showOrphans: false, focus: null, component: null, chapter: null,
+                nodeset: "union", fileview: "off" };
 
 // Which universe a node belongs to. A node "has Lean" if it carries Lean source
 // (lean_aux nodes always do; blueprint nodes do once their \lean{} resolved).
@@ -636,8 +686,247 @@ const network = new vis.Network(
 // draggable) and frame the result.
 network.on("stabilizationIterationsDone", () => {
   network.setOptions({ physics: false });
+  layoutOrphans();
   fitFloored();
 });
+
+// ── Isolated-node layout ──────────────────────────────────────────────────────
+// Isolated nodes (no edges) are excluded from the force simulation — under pure
+// repulsion they'd drift to the far edges and vanish at fit-zoom. Instead they
+// are parked on a tidy grid beside the connected graph so they stay visible.
+
+function layoutOrphans() {
+  if (state.focus || !state.showOrphans) return;
+  const ids = nodesDS.getIds().filter(id => isOrphan(id));
+  if (!ids.length) return;
+  const pos  = network.getPositions();
+  const conn = nodesDS.getIds().filter(id => !isOrphan(id));
+  const spacing = 46;
+  const cols = Math.max(1, Math.ceil(Math.sqrt(ids.length)));
+  const gridW = (cols - 1) * spacing;
+  let centerX, topY;
+  if (conn.length) {
+    const xs = conn.map(id => pos[id].x), ys = conn.map(id => pos[id].y);
+    centerX = (Math.min(...xs) + Math.max(...xs)) / 2;
+    topY    = Math.max(...ys) + 120;     // a tidy block just below the cluster
+  } else { centerX = 0; topY = 0; }
+  const startX = centerX - gridW / 2;    // centred, so a full fit frames it all
+  ids.sort();
+  ids.forEach((id, i) =>
+    network.moveNode(id, startX + (i % cols) * spacing,
+                         topY + Math.floor(i / cols) * spacing));
+}
+
+// ── File-view background ──────────────────────────────────────────────────────
+// An optional, subtle background tint that groups nodes by their source file.
+// Each node seeds its file's colour; every background pixel takes the colour of
+// the nearest node — an exact Voronoi map (spatial-hash accelerated) rendered at
+// high resolution for clean, anti-aliased borders, then drawn behind the graph
+// and extended to the whole viewport. Nodes keep their effort colours on top.
+
+const fileOf = (n, mode) => mode === "lean" ? (n.lean_file || "") : (n.tex_file || "");
+
+// A curated, perceptually-distinct palette (d3 category20-style). A file's
+// colour is chosen by hashing its *name*, so it is stable no matter how the
+// graph is filtered, focused or re-laid out — and adjacent files stay easy to
+// tell apart. Projects with more files than the palette wrap to a darker /
+// lighter tier so the wrapped entries remain distinguishable.
+const FILE_PALETTE = [
+  [31,119,180],[255,127,14],[44,160,44],[214,39,40],[148,103,189],
+  [140,86,75],[227,119,194],[188,189,34],[23,190,207],[127,205,187],
+  [174,199,232],[255,187,120],[152,223,138],[255,152,150],[197,176,213],
+  [196,156,148],[247,182,210],[252,146,114],[219,219,141],[158,218,229],
+];
+function hashStr(s) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+const _SLOTS = FILE_PALETTE.length * 3;          // 20 hues × 3 lightness tiers
+function slotColor(slot) {
+  const base = FILE_PALETTE[slot % FILE_PALETTE.length];
+  const tier = Math.floor(slot / FILE_PALETTE.length) % 3;   // 0 normal · 1 dark · 2 light
+  return tier === 1 ? base.map(v => Math.round(v * 0.68))
+       : tier === 2 ? base.map(v => Math.round(v + (255 - v) * 0.45))
+       : base.slice();
+}
+// Per-mode slot assignment: each file's preferred slot is its name-hash; exact
+// collisions within the same mode are bumped to the next free slot. So every
+// file in a mode gets a distinct colour (up to _SLOTS files), the colour is
+// driven by the name, and it never shifts under focus/reset/filtering (the file
+// set is fixed for the session, and the map is cached).
+const _fileSlots = {};
+function ensureFileSlots(mode) {
+  if (_fileSlots[mode]) return _fileSlots[mode];
+  const files = Object.keys(fileCounts(mode)).sort();
+  const used = new Set(), map = {};
+  for (const f of files) {
+    let slot = hashStr(f) % _SLOTS, t = 0;
+    while (used.has(slot) && t < _SLOTS) { slot = (slot + 1) % _SLOTS; t++; }
+    used.add(slot); map[f] = slot;
+  }
+  return (_fileSlots[mode] = map);
+}
+function colorRGB(file) {
+  const map = ensureFileSlots(state.fileview);
+  const slot = (file in map) ? map[file] : hashStr(file) % _SLOTS;
+  return slotColor(slot);
+}
+
+function fileCounts(mode) {
+  const counts = {};
+  for (const id in allNodes) {
+    const f = fileOf(allNodes[id], mode);
+    if (f) counts[f] = (counts[f] || 0) + 1;
+  }
+  return counts;
+}
+
+let fileBg = null;            // {canvas, minX, minY, w, h, W, H} in graph coords
+
+function rebuildFileBg(quick) {
+  const mode = state.fileview;
+  if (mode === "off") { fileBg = null; network.redraw(); renderFileLegend(); return; }
+
+  const pos = network.getPositions();
+  const ids = Object.keys(pos).filter(id => allNodes[id] && fileOf(allNodes[id], mode));
+  if (!ids.length) { fileBg = null; network.redraw(); renderFileLegend(); return; }
+
+  const xs = ids.map(id => pos[id].x), ys = ids.map(id => pos[id].y);
+  const pad = 70;
+  const minX = Math.min(...xs) - pad, maxX = Math.max(...xs) + pad;
+  const minY = Math.min(...ys) - pad, maxY = Math.max(...ys) + pad;
+  const wG = Math.max(1, maxX - minX), hG = Math.max(1, maxY - minY);
+
+  // High-res grid → straight, finely anti-aliased borders; a coarser grid is
+  // used for the live updates while nodes are still moving, for speed.
+  const target = quick ? 224 : 512;
+  const scale  = target / Math.max(wG, hG);
+  const W = Math.max(1, Math.round(wG * scale)), H = Math.max(1, Math.round(hG * scale));
+
+  const seeds = ids.map(id => {
+    const [r, g, b] = colorRGB(fileOf(allNodes[id], mode));
+    return { x: pos[id].x, y: pos[id].y, r, g, b };
+  });
+
+  // Bucket the seeds so each pixel's nearest-seed search is ~O(1).
+  const gcols = Math.max(1, Math.round(Math.sqrt(seeds.length)));
+  const grows = gcols;
+  const cw = wG / gcols, ch = hG / grows;
+  const buckets = Array.from({ length: gcols * grows }, () => []);
+  const clampC = (v, hi) => Math.min(hi, Math.max(0, v));
+  for (const s of seeds) {
+    const cx = clampC(Math.floor((s.x - minX) / cw), gcols - 1);
+    const cy = clampC(Math.floor((s.y - minY) / ch), grows - 1);
+    buckets[cy * gcols + cx].push(s);
+  }
+  const cellMin = Math.min(cw, ch), maxR = Math.max(gcols, grows);
+  function nearest(wx, wy) {
+    const cx = clampC(Math.floor((wx - minX) / cw), gcols - 1);
+    const cy = clampC(Math.floor((wy - minY) / ch), grows - 1);
+    let best = Infinity, bs = seeds[0];
+    for (let r = 0; r <= maxR; r++) {
+      const x0 = Math.max(0, cx - r), x1 = Math.min(gcols - 1, cx + r);
+      const y0 = Math.max(0, cy - r), y1 = Math.min(grows - 1, cy + r);
+      for (let yy = y0; yy <= y1; yy++) {
+        const edgeRow = (yy === cy - r || yy === cy + r);
+        for (let xx = x0; xx <= x1; xx++) {
+          if (r > 0 && !edgeRow && xx !== cx - r && xx !== cx + r) continue;
+          for (const s of buckets[yy * gcols + xx]) {
+            const dx = s.x - wx, dy = s.y - wy, d = dx * dx + dy * dy;
+            if (d < best) { best = d; bs = s; }
+          }
+        }
+      }
+      // Stop once the closest hit is nearer than any not-yet-scanned ring.
+      if (best < Infinity && Math.sqrt(best) <= r * cellMin) break;
+    }
+    return bs;
+  }
+
+  const cv = document.createElement("canvas");
+  cv.width = W; cv.height = H;
+  const ctx = cv.getContext("2d");
+  const img = ctx.createImageData(W, H), data = img.data;
+  for (let gy = 0; gy < H; gy++) {
+    const wy = minY + (gy + 0.5) / H * hG;
+    for (let gx = 0; gx < W; gx++) {
+      const wx = minX + (gx + 0.5) / W * wG;
+      const s = nearest(wx, wy);
+      const o = (gy * W + gx) * 4;
+      data[o] = s.r; data[o + 1] = s.g; data[o + 2] = s.b; data[o + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  fileBg = { canvas: cv, minX, minY, w: wG, h: hG, W, H };
+  network.redraw();
+  renderFileLegend();
+}
+
+// beforeDrawing runs in graph coordinates, so the cached bitmap pans and zooms
+// with the view automatically. The seed bbox is filled with the Voronoi map, and
+// the colours of its edge pixels are extended outward to cover the *whole*
+// viewport — so the tint follows the nearest-node rule everywhere, not just a
+// central square.
+network.on("beforeDrawing", ctx => {
+  if (!fileBg) return;
+  const c = fileBg.canvas, W = fileBg.W, H = fileBg.H;
+  const x0 = fileBg.minX, y0 = fileBg.minY, x1 = x0 + fileBg.w, y1 = y0 + fileBg.h;
+  const tl = network.DOMtoCanvas({ x: 0, y: 0 });
+  const br = network.DOMtoCanvas({ x: $("graph").clientWidth, y: $("graph").clientHeight });
+  const L = Math.min(tl.x, br.x), R = Math.max(tl.x, br.x);
+  const T = Math.min(tl.y, br.y), B = Math.max(tl.y, br.y);
+
+  ctx.save();
+  ctx.globalAlpha = 0.32;                 // visible but still a background tint
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(c, x0, y0, fileBg.w, fileBg.h);                          // centre
+  if (L < x0) ctx.drawImage(c, 0, 0, 1, H, L, y0, x0 - L, fileBg.h);     // left
+  if (R > x1) ctx.drawImage(c, W - 1, 0, 1, H, x1, y0, R - x1, fileBg.h);// right
+  if (T < y0) ctx.drawImage(c, 0, 0, W, 1, x0, T, fileBg.w, y0 - T);     // top
+  if (B > y1) ctx.drawImage(c, 0, H - 1, W, 1, x0, y1, fileBg.w, B - y1);// bottom
+  if (L < x0 && T < y0) ctx.drawImage(c, 0, 0, 1, 1, L, T, x0 - L, y0 - T);
+  if (R > x1 && T < y0) ctx.drawImage(c, W - 1, 0, 1, 1, x1, T, R - x1, y0 - T);
+  if (L < x0 && B > y1) ctx.drawImage(c, 0, H - 1, 1, 1, L, y1, x0 - L, B - y1);
+  if (R > x1 && B > y1) ctx.drawImage(c, W - 1, H - 1, 1, 1, x1, y1, R - x1, B - y1);
+  ctx.restore();
+});
+
+function renderFileLegend() {
+  const panel = $("file-legend"), mode = state.fileview;
+  if (mode === "off") { panel.style.display = "none"; return; }
+  panel.style.display = "block";
+  const label = mode === "lean" ? "Lean" : "LaTeX";
+  const counts = fileCounts(mode);
+  const files = Object.keys(counts).sort();
+  if (!files.length) {
+    panel.innerHTML = `<h4>${label} files</h4>` +
+      `<div class="fl-empty">no ${label} file info available</div>`;
+    return;
+  }
+  panel.innerHTML = `<h4>${label} files · ${files.length}</h4>` + files.map(f => {
+    const [r, g, b] = colorRGB(f);
+    return `<div class="fl-row">` +
+      `<span class="fl-sw" style="background:rgb(${r},${g},${b})"></span>` +
+      `<span class="fl-name" title="${esc(f)}">${esc(f)}</span>` +
+      `<span class="fl-n">${counts[f]}</span></div>`;
+  }).join("");
+}
+
+// Recompute the tint *while* the layout changes, so the regions move with the
+// nodes rather than snapping only once at the end: throttled coarse rebuilds
+// during stabilization and dragging, then a final full-resolution pass.
+let _liveLast = 0;
+function liveFileBg() {
+  if (state.fileview === "off") return;
+  const now = Date.now();
+  if (now - _liveLast < 110) return;
+  _liveLast = now;
+  rebuildFileBg(true);
+}
+network.on("stabilizationProgress", liveFileBg);
+network.on("dragging", liveFileBg);
+network.on("dragEnd", () => { if (state.fileview !== "off") rebuildFileBg(); });
 
 // ── Navigation: swipe = pan · Ctrl+scroll / pinch = zoom ─────────────────────
 
@@ -667,9 +956,12 @@ function fitFloored() {
   // graph can't be shrunk to a speck, and a huge one can still reach overview.
   ZOOM_MIN = Math.max(0.02, Math.min(fitScale * 0.7, ZOOM_MAX));
   // For very large graphs `fit` is sub-pixel; don't *start* there (keeps nodes
-  // legible) but still allow zooming out to it.
-  if (fitScale < FIT_FLOOR) network.moveTo({ scale: FIT_FLOOR, animation: false });
+  // legible) but still allow zooming out to it. When isolated nodes are shown we
+  // fully fit instead, so their (potentially large) block is actually visible.
+  if (!state.showOrphans && fitScale < FIT_FLOOR)
+    network.moveTo({ scale: FIT_FLOOR, animation: false });
   recomputeBounds();
+  rebuildFileBg();   // node positions just changed — refresh the file tint
 }
 
 $("graph").addEventListener("wheel", e => {
@@ -714,17 +1006,20 @@ function apply() {
   }
 
   // Re-settle the now-visible subset; the stabilization handler freezes and
-  // fits when it finishes. A lone node needs no simulation.
-  if (nodes.length > 1) {
+  // fits when it finishes. With nothing to simulate (a lone node, or only
+  // isolated nodes — which are physics:false) we lay out and fit directly.
+  const anyPhysics = nodes.some(n => n.physics !== false);
+  if (nodes.length > 1 && anyPhysics) {
     network.setOptions({ physics: PHYSICS_OPTS });
   } else {
-    setTimeout(fitFloored, 0);
+    setTimeout(() => { layoutOrphans(); fitFloored(); }, 0);
   }
 }
 
 function syncControls() {
   $("orphans").checked  = state.showOrphans;
   $("nodeset").value    = state.nodeset;
+  $("fileview").value   = state.fileview;
   $("component").value  = state.component === null ? "" : String(state.component);
   $("chapter").value    = state.chapter || "";
 }
@@ -788,6 +1083,9 @@ $("component").addEventListener("change", e => {
 });
 $("chapter").addEventListener("change", e => {
   state.chapter = e.target.value || null; state.focus = null; apply();
+});
+$("fileview").addEventListener("change", e => {
+  state.fileview = e.target.value; rebuildFileBg();
 });
 $("search").addEventListener("change", e => {
   const v = e.target.value.trim();
@@ -900,9 +1198,11 @@ function renderNode(id) {
 
   const statusBadge = n.proved
     ? '<span class="badge badge-proved">✓ leanok</span>'
-    : (n.has_sorry
-        ? '<span class="badge badge-sorry">sorry</span>'
-        : '<span class="badge badge-unproved">unproved</span>');
+    : (n.mathlib_ok
+        ? '<span class="badge badge-proved">ⓜ mathlib</span>'
+        : (n.has_sorry
+            ? '<span class="badge badge-sorry">sorry</span>'
+            : '<span class="badge badge-unproved">unproved</span>'));
 
   const mkChip = u => `<span class="dep-chip" onclick="goTo('${esc(u)}')">${esc(u)}</span>`;
   const depsHtml = n.uses.length
@@ -929,6 +1229,8 @@ function renderNode(id) {
       <div class="node-id">${esc(n.id)}</div>
       ${n.chapter   ? `<div class="node-chapter">§ ${esc(n.chapter)}</div>` : ''}
       ${n.lean_name ? `<div class="lean-ref">Lean: <code>${esc(n.lean_name)}</code></div>` : ''}
+      ${n.tex_file  ? `<div class="lean-ref">tex: <code>${esc(n.tex_file)}</code></div>` : ''}
+      ${n.lean_file ? `<div class="lean-ref">file: <code>${esc(n.lean_file)}</code></div>` : ''}
       <button class="btn-focus" onclick="${focusCall}">⊙ ${focusLabel}</button>
     </div>
 

@@ -113,7 +113,12 @@ class LeanScanner:
         result: dict[str, LeanDecl] = {}
         winner: dict[str, Path] = {}
         for path, decls in zip(files, per_file):
+            try:
+                rel = path.relative_to(root).as_posix()
+            except ValueError:
+                rel = path.name
             for name, decl in decls.items():
+                decl.file = rel
                 if name in result and result[name].source != decl.source:
                     # Same name, different body — a real conflict worth flagging.
                     self.collisions.append((name, str(winner[name]), str(path)))

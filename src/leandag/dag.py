@@ -106,6 +106,17 @@ class DAG:
         """Nodes that no other node depends on."""
         return [n for n in self._nodes if n.rdep_count == 0]
 
+    @property
+    def isolated(self) -> list[GraphNode]:
+        """Nodes with no edges at all — no ``\\uses{}`` in or out.
+
+        These declarations were never wired into the graph: nothing depends on
+        them and they depend on nothing. A large isolated set usually means the
+        dependencies simply haven't been recorded yet.
+        """
+        return [n for n in self._nodes
+                if n.dep_count == 0 and n.rdep_count == 0]
+
     def node(self, node_id: str) -> GraphNode:
         return self._by_id[node_id]
 
@@ -178,11 +189,14 @@ class DAG:
                 uses            = decl.uses,
                 lean_name       = ", ".join(decl.lean_names) or None,
                 proved          = decl.is_proved,
+                mathlib_ok      = decl.mathlib_ok,
                 proof_tex       = proof_tex,
                 lean_source     = "\n\n".join(m.source for m in matched),
                 proof_size_lean = proof_size if matched else None,
                 has_sorry       = any(m.has_sorry for m in matched),
                 proof_size_tex  = proof_size_tex,
+                tex_file        = decl.tex_file,
+                lean_file       = next((m.file for m in matched if m.file), ""),
             ))
 
         # Lean declarations not referenced in the blueprint: formalization
@@ -202,6 +216,7 @@ class DAG:
                 lean_source     = lean.source,
                 proof_size_lean = lean.proof_size,
                 has_sorry       = lean.has_sorry,
+                lean_file       = lean.file,
             ))
 
         return nodes
@@ -249,7 +264,9 @@ class DAG:
 
         ``effort_local`` is the work remaining to formalise the node:
 
-        - ``0``                         if it is already formalised in Lean
+        - ``0``                         if it is already formalised in Lean,
+                                        or marked ``\\mathlibok`` (it exists in
+                                        mathlib, so there is nothing to write)
         - for proof nodes (theorem/lemma/…): the draft proof's tex size,
           or ``None`` (∞) when there is no proof to estimate from
         - for definitions and other non-proof nodes: the tex size of the
@@ -287,8 +304,8 @@ class DAG:
             return total
 
         def effort_local(n: GraphNode) -> Optional[int]:
-            # Already formalised in Lean → nothing left to do.
-            if n.proof_size_lean is not None:
+            # Already formalised in Lean, or available in mathlib → nothing to do.
+            if n.mathlib_ok or n.proof_size_lean is not None:
                 return 0
             # Proof nodes: work ≈ the draft proof; ∞ when there is no draft.
             if n.type in _PROOF_TYPES:

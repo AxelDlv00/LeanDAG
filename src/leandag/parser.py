@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import bisect
 import re
 from pathlib import Path
+from typing import Callable
 
 from .models import BlueprintDecl
 
@@ -21,6 +23,7 @@ _LABEL_RE   = re.compile(r'\\label\{([^}]+)\}')
 _LEAN_RE    = re.compile(r'\\lean\{([^}]+)\}')
 _USES_RE    = re.compile(r'\\uses\{([^}]+)\}')
 _LEANOK_RE  = re.compile(r'\\leanok\b')
+_MATHLIBOK_RE = re.compile(r'\\mathlibok\b')
 _CHAPTER_RE = re.compile(r'\\chapter\*?\{([^}]+)\}')
 _INPUT_RE   = re.compile(r'\\input\{([^}]+)\}')
 _PROOF_RE   = re.compile(r'\\begin\{proof\}(.*?)\\end\{proof\}', re.DOTALL)
@@ -52,34 +55,74 @@ class BlueprintParser:
         ``proof_bodies`` maps a declaration id to the raw LaTeX text
         inside its nearest ``proof`` environment.
         """
-        text        = self._load_tex(self._entry, visited=set())
+        pieces      = self._load_pieces(self._entry, visited=set())
+        text        = ''.join(chunk for _, chunk in pieces)
         self.macros = self._extract_macros(text)
-        decls  = self._extract_declarations(text)
+        file_at     = self._build_file_index(pieces)
+        decls  = self._extract_declarations(text, file_at)
         proofs = self._extract_proofs(text, decls)
         for decl in decls:
             decl.proof_tex = proofs.get(decl.id, '')
         return decls, proofs
 
-    def _load_tex(self, path: Path, visited: set[Path]) -> str:
-        """Recursively load a .tex file, expanding \\input{{}} directives."""
+    def _load_pieces(self, path: Path, visited: set[Path]) -> list[tuple[Path, str]]:
+        """Recursively load a .tex file, expanding ``\\input{}`` directives.
+
+        Returns the source as a list of ``(file, chunk)`` pieces in reading
+        order. Concatenating the chunks yields exactly the flattened text (each
+        ``\\input{}`` token replaced by its target's content, or by nothing when
+        the target is missing); keeping the pieces lets us map any position in
+        that text back to the file it came from.
+        """
         path = path.resolve()
         if path in visited:
-            return ''
+            return []
         visited.add(path)
         text = self._strip_comments(
             path.read_text(encoding='utf-8', errors='replace')
         )
 
-        def _expand(m: re.Match) -> str:
+        pieces: list[tuple[Path, str]] = []
+        last = 0
+        for m in _INPUT_RE.finditer(text):
+            pieces.append((path, text[last:m.start()]))
             fname = m.group(1).strip()
             if not fname.endswith('.tex'):
                 fname += '.tex'
             child = (path.parent / fname).resolve()
-            return self._load_tex(child, visited) if child.exists() else ''
+            if child.exists():
+                pieces.extend(self._load_pieces(child, visited))
+            last = m.end()
+        pieces.append((path, text[last:]))
+        return pieces
 
-        return _INPUT_RE.sub(_expand, text)
+    def _rel_file(self, path: Path) -> str:
+        """A short, stable label for a source file (relative to the entry dir)."""
+        base = self._entry.resolve().parent
+        try:
+            return path.resolve().relative_to(base).as_posix()
+        except ValueError:
+            return path.name
 
-    def _extract_declarations(self, text: str) -> list[BlueprintDecl]:
+    def _build_file_index(self, pieces: list[tuple[Path, str]]) -> Callable[[int], str]:
+        """Return ``file_at(pos)`` mapping a flattened-text offset to its file."""
+        starts: list[int] = []
+        files:  list[str] = []
+        off = 0
+        for path, chunk in pieces:
+            starts.append(off)
+            files.append(self._rel_file(path))
+            off += len(chunk)
+
+        def file_at(pos: int) -> str:
+            i = bisect.bisect_right(starts, pos) - 1
+            return files[i] if i >= 0 else ""
+
+        return file_at
+
+    def _extract_declarations(
+        self, text: str, file_at: Callable[[int], str]
+    ) -> list[BlueprintDecl]:
         chapter_positions = [
             (m.start(), m.group(1).strip()) for m in _CHAPTER_RE.finditer(text)
         ]
@@ -122,7 +165,8 @@ class BlueprintParser:
                     for name in lm.group(1).split(',')
                     if name.strip()
                 ]
-                is_proved = bool(_LEANOK_RE.search(body))
+                is_proved  = bool(_LEANOK_RE.search(body))
+                is_mathlib = bool(_MATHLIBOK_RE.search(body))
                 uses_raw  = uses_m.group(1) if uses_m else ''
                 uses      = [u.strip() for u in uses_raw.split(',') if u.strip()]
 
@@ -139,6 +183,8 @@ class BlueprintParser:
                     proof_tex  = '',
                     lean_names = lean_names,
                     is_proved  = is_proved,
+                    mathlib_ok = is_mathlib,
+                    tex_file   = file_at(bm.start()),
                 ))
 
         label_pos = {m.group(1).strip(): m.start() for m in _LABEL_RE.finditer(text)}

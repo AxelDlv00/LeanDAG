@@ -53,6 +53,25 @@ def test_needs_leanok():
     assert {n.id for n in q.needs_leanok()} == {"A"}
 
 
+def test_mathlibok_is_effort_zero_and_done():
+    # A is \mathlibok (in mathlib, no local Lean) → effort 0, done, not a gap.
+    from leandag.models import BlueprintDecl
+    decls = [
+        BlueprintDecl("A", "lemma", "", "", "", [],    "", [], False, mathlib_ok=True),
+        BlueprintDecl("B", "lemma", "", "", "", ["A"], "x"*20, [], False),
+    ]
+    dag = DAG.from_sources(decls, {"B": "x"*20}, {})
+    a = dag.node("A")
+    assert a.effort_local == 0                       # mathlib → nothing to do
+    q = Queries(dag)
+    ready = {n.id for n in q.ready_to_prove()}
+    assert "A" not in ready                          # already in mathlib
+    assert "B" in ready                              # its only dep (A) is done
+    assert "A" not in {n.id for n in q.unproved()}            # not pending work
+    assert "A" not in {n.id for n in q.needs_leanok()}        # mathlib ≠ needs leanok
+    assert "A" not in {n.id for n in q.needs_lean_statement()}  # not a gap
+
+
 def test_sort_by_impact():
     from leandag.models import BlueprintDecl
     decls = [
@@ -76,6 +95,21 @@ def test_leaves():
     q = Queries(_dag())
     ids = {n.id for n in q.leaves()}
     assert "C" in ids
+
+
+def test_isolated():
+    # E is wired to nothing (no uses, used by nobody); A/B/C form a chain.
+    from leandag.models import BlueprintDecl
+    decls = [
+        BlueprintDecl("A", "lemma", "", "", "", [],    "", [], False),
+        BlueprintDecl("B", "lemma", "", "", "", ["A"], "", [], False),
+        BlueprintDecl("E", "lemma", "", "", "", [],    "", [], False),  # isolated
+    ]
+    q = Queries(DAG.from_sources(decls, {}, {}))
+    ids = {n.id for n in q.isolated()}
+    assert "E" in ids            # no edges in or out
+    assert "A" not in ids        # used by B
+    assert "B" not in ids        # uses A
 
 
 def test_unproved():

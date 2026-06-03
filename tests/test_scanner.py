@@ -123,6 +123,15 @@ def test_scan_directory(tmp_path):
     assert "broken" in result
 
 
+def test_scan_records_source_file(tmp_path):
+    (tmp_path / "A.lean").write_text(_LEAN_BASIC)
+    sub = tmp_path / "sub"; sub.mkdir()
+    (sub / "B.lean").write_text(_LEAN_WITH_SORRY)
+    result = LeanScanner().scan(tmp_path)
+    assert result["Foo.my_theorem"].file == "A.lean"
+    assert result["broken"].file == "sub/B.lean"   # relative, posix-style
+
+
 def test_lake_directory_skipped(tmp_path):
     lake = tmp_path / ".lake" / "packages" / "Mathlib"
     lake.mkdir(parents=True)

@@ -108,6 +108,7 @@ def _node_brief(n: GraphNode) -> dict:
         "type":             n.type,
         "chapter":          n.chapter,
         "proved":           n.proved,
+        "mathlib_ok":       n.mathlib_ok,
         "has_sorry":        n.has_sorry,
         "lean_name":        n.lean_name,
         "effort_local":     n.effort_local,
@@ -233,8 +234,11 @@ def build(
         "blueprint_nodes": sum(1 for n in dag.nodes if n.type != "lean_aux"),
         "lean_aux_nodes":  sum(1 for n in dag.nodes if n.type == "lean_aux"),
         "proved":          sum(1 for n in dag.nodes if n.type != "lean_aux" and n.proved),
+        "mathlib_ok":      sum(1 for n in dag.nodes if n.type != "lean_aux" and n.mathlib_ok),
         "with_sorry":      sum(1 for n in dag.nodes if n.has_sorry),
         "edges":           len(dag.edges),
+        "isolated":        sum(1 for n in dag.nodes
+                               if n.dep_count == 0 and n.rdep_count == 0),
     }
     report = {
         "dag_path":         str(dag_path),
@@ -264,9 +268,11 @@ def build(
             rep.ok(f"HTML saved {leandag_dir / _HTML}")
         rep.blank()
         eff = report["effort"]
+        bp_cell = f"{summary['blueprint_nodes']} ({summary['proved']} proved"
+        bp_cell += f", {summary['mathlib_ok']} mathlib)" if summary["mathlib_ok"] else ")"
         rep.table(
             ["metric", "value"],
-            [["blueprint nodes", f"{summary['blueprint_nodes']} ({summary['proved']} proved)"],
+            [["blueprint nodes", bp_cell],
              ["lean-aux nodes",  summary["lean_aux_nodes"]],
              ["edges",           summary["edges"]],
              ["with sorry",      summary["with_sorry"]],
@@ -304,10 +310,14 @@ def stats(
     n_bp     = sum(1 for n in dag.nodes if n.type != "lean_aux")
     n_aux    = sum(1 for n in dag.nodes if n.type == "lean_aux")
     n_proved = sum(1 for n in dag.nodes if n.type != "lean_aux" and n.proved)
+    n_mathlib= sum(1 for n in dag.nodes if n.type != "lean_aux" and n.mathlib_ok)
     n_sorry  = sum(1 for n in dag.nodes if n.has_sorry)
     n_ready  = len(q.ready_to_prove())
     n_gaps   = len(q.needs_lean_statement())
     n_leanok = len(q.needs_leanok())
+    isolated   = q.isolated()
+    n_isolated = len(isolated)
+    n_iso_bp   = sum(1 for n in isolated if n.type != "lean_aux")
     pct      = round(100 * n_proved / n_bp, 1) if n_bp else 0.0
     eff      = dag.effort_summary()
 
@@ -317,6 +327,7 @@ def stats(
         "edges":           len(dag.edges),
         "proved":          n_proved,
         "proved_pct":      pct,
+        "mathlib_ok":      n_mathlib,
         "with_sorry":      n_sorry,
         "ready_to_prove":  n_ready,
         "needs_lean_statement": n_gaps,
@@ -324,6 +335,8 @@ def stats(
         "unmatched_lean":  len(dag.unmatched_lean),
         "axioms":          len(dag.axioms),
         "leaves":          len(dag.leaves),
+        "isolated":        n_isolated,
+        "isolated_blueprint": n_iso_bp,
         "effort":          eff,
     }
 
@@ -334,6 +347,7 @@ def stats(
              ["Lean-aux nodes",   n_aux],
              ["Edges",            len(dag.edges)],
              ["Proved (leanok)",  f"{n_proved} ({pct}%)"],
+             ["Mathlib-backed",   n_mathlib],
              ["With sorry",       n_sorry],
              ["Ready to formalize", n_ready],
              ["Needs \\lean{}",   n_gaps],
@@ -341,6 +355,7 @@ def stats(
              ["Unmatched \\lean{}", len(dag.unmatched_lean)],
              ["Axioms (dep=0)",   len(dag.axioms)],
              ["Leaves (rdep=0)",  len(dag.leaves)],
+             ["Isolated (no edges)", f"{n_isolated} ({n_iso_bp} blueprint)"],
              ["— Effort —",       ""],
              ["Done (Lean chars)",            f"{eff['effort_done']:,}"],
              ["Remaining (≥, finite only)",   f"{eff['effort_remaining_lower']:,}"],
@@ -414,7 +429,7 @@ def focus(
     rep.emit(obj, rich=render, text=render)
 
 
-_SHOW_CHOICES = ("axioms", "leaves", "unproved", "sorry", "ready", "gaps", "leanok")
+_SHOW_CHOICES = ("axioms", "leaves", "isolated", "unproved", "sorry", "ready", "gaps", "leanok")
 
 
 @app.command()
@@ -436,6 +451,7 @@ def show(
     nodes: list[GraphNode] = {
         "axioms":   q.axioms,
         "leaves":   q.leaves,
+        "isolated": q.isolated,
         "unproved": q.unproved,
         "sorry":    q.with_sorry,
         "ready":    q.ready_to_prove,
@@ -458,6 +474,7 @@ def query(
     type_name:     Optional[str] = typer.Option(None,       "--type",          help="Filter by node type (lemma, theorem…)."),
     unproved:      bool          = typer.Option(False,      "--unproved",      help="Only unproved blueprint nodes."),
     sorry:         bool          = typer.Option(False,      "--sorry",         help="Only nodes with sorry."),
+    isolated:      bool          = typer.Option(False,      "--isolated",      help="Only isolated nodes (no edges in or out)."),
     sort:          str           = typer.Option("effort",   "--sort",          help="Sort by: effort, deps, impact, id."),
     include_proved:bool          = typer.Option(False,      "--include-proved",help="Include already-proved nodes (only relevant with --sort effort)."),
     top:           Optional[int] = typer.Option(None,       "--top", "-n",     help="Limit to N results."),
@@ -484,10 +501,14 @@ def query(
         type_name     = type_name,
         unproved_only = unproved,
         sorry_only    = sorry,
+        isolated_only = isolated,
     )
 
     if sort == "effort":
-        nodes = Queries.sort_by_effort(nodes, top=top, exclude_proved=not include_proved)
+        # Don't silently drop proved nodes when the user explicitly asked for a
+        # set that is mostly proved (e.g. isolated lean_aux helpers).
+        exclude_proved = not include_proved and not isolated
+        nodes = Queries.sort_by_effort(nodes, top=top, exclude_proved=exclude_proved)
     elif sort == "deps":
         nodes = Queries.sort_by_deps(nodes, top=top)
     elif sort == "impact":
