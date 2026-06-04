@@ -96,6 +96,21 @@ def test_isolated_property():
     assert {n.id for n in dag.isolated} == {"E"}
 
 
+def test_remarks_are_not_nodes_and_uses_to_them_are_dropped():
+    # Remarks are prose annotations: no node, and a \uses{} pointing at a
+    # remark label is dropped silently (not a broken reference).
+    remark = BlueprintDecl(
+        id="rem:note", type="remark", title="", chapter="", statement="",
+        uses=["A"], proof_tex="", lean_names=[], is_proved=False,
+    )
+    decls = [_decl("A"), remark, _decl("B", uses=["A", "rem:note"])]
+    dag = DAG.from_sources(decls, {}, {})
+    assert {n.id for n in dag.nodes} == {"A", "B"}
+    assert dag.node("B").uses == ["A"]
+    # No dangling edge either.
+    assert all("rem:note" not in (e.source, e.target) for e in dag.edges)
+
+
 def test_file_provenance_on_nodes():
     decls = [_decl("A", lean_name="Foo"), _decl("B")]
     decls[0].tex_file = "ch1.tex"

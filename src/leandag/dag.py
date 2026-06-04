@@ -9,8 +9,9 @@ from .models import BlueprintDecl, Edge, GraphNode, LeanDecl
 
 
 # Node types whose formalisation work is the *proof*. Everything else
-# (definition, notation, remark, conjecture, lean_aux) is measured by the
-# content of the declaration itself — it has no proof to write.
+# (definition, notation, conjecture, lean_aux) is measured by the content
+# of the declaration itself — it has no proof to write. Remarks never
+# become nodes at all (see _build_nodes).
 _PROOF_TYPES: frozenset[str] = frozenset({
     "lemma", "theorem", "proposition", "corollary", "exercise",
 })
@@ -168,6 +169,15 @@ class DAG:
         nodes: list[GraphNode] = []
         referenced_lean: set[str] = set()
 
+        # Remarks are prose annotations, not mathematical obligations: they
+        # carry no proof, pin no Lean declaration, and would only pollute the
+        # graph (isolated nodes, fake gaps). They do not become DAG nodes, and
+        # a ``\uses{}`` pointing at a remark label is silently dropped rather
+        # than reported as a broken reference. (The parser still consumes the
+        # environments so their labels are known here.)
+        remark_ids = {d.id for d in blueprint_decls if d.type == "remark"}
+        blueprint_decls = [d for d in blueprint_decls if d.type != "remark"]
+
         for decl in blueprint_decls:
             # A node may point at several Lean declarations (\lean{a, b}); the
             # Lean-side metrics aggregate over every name that resolves.
@@ -186,7 +196,7 @@ class DAG:
                 title           = decl.title,
                 chapter         = decl.chapter,
                 statement       = decl.statement,
-                uses            = decl.uses,
+                uses            = [u for u in decl.uses if u not in remark_ids],
                 lean_name       = ", ".join(decl.lean_names) or None,
                 proved          = decl.is_proved,
                 mathlib_ok      = decl.mathlib_ok,
